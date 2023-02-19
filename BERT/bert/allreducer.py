@@ -199,6 +199,9 @@ class AllReducer():
         self._comm.Set_errhandler(MPI.ERRORS_RETURN)
         self._name = "myallreduce"
 
+        self.topka_stable_indices = torch.empty(0)
+        #self.topka_stable_recompute_interval = 100
+
         self._compression = compression
         self.allocate_storage(self._name)
 
@@ -293,6 +296,9 @@ class AllReducer():
 
         if self._compression.name in ['topkA', 'topkA2']:
             result, global_indexes, included_indexes = topk_sparse_allreduce(self._comm, entry, self._sparse_storages[name], indexes=topk_indexes, dtype=np.float32)
+        elif self._compression.name in ['topkA_stable']:
+            if 
+            result, global_indexes, included_indexes = topk_sparse_allreduce(self._comm, entry, self._sparse_storages[name], indexes=topk_indexes, dtype=np.float32)
         elif self._compression.name in ['gtopk']:
             result, global_indexes, included_indexes = gtopk_sparse_allreduce(self._comm, entry, storage=self._sparse_storages[name], indexes=topk_indexes, dtype=np.float32)
 
@@ -308,7 +314,7 @@ class AllReducer():
         tensor.fill_(0.0)
         if self._compression.name in ['gtopk']:
             tensor[final_indexes] = r
-        elif self._compression.name in ['topkA', 'topkA2']:
+        elif self._compression.name in ['topkA', 'topkA2', 'topkA_stable']:
             num_workers = self._comm.size
             nnz = topk_indexes.size(0)
             for i in range(num_workers):
@@ -350,6 +356,8 @@ class AllReducer():
         num_workers = comm.size
         rank = comm.rank
         new_name = self._name
+
+        topka_stable_threshold = 700
 
         stime = time.time()
         if self._allreduce_counter[new_name] < -1: # full train
@@ -988,11 +996,45 @@ class AllReducer():
                 with torch.no_grad():
                     result = torch.from_numpy(recv_buffer).to(device=new_tensor.device) / num_workers
 
-        elif self._sparse and self._compression.name in ['topkA', 'topkA2', 'gtopk']:
+        elif self._sparse and (self._compression.name in ['topkA', 'topkA2', 'gtopk'] or (self._compression.name == 'topkA_stable' and self._allreduce_counter[new_name] > topka_stable_threshold)):
             density = self.get_current_density()
+            topka_stable_recompute_interval = 100
+            topka_stable_indices = torch.empty(1)
 
             original_shape = new_tensor.shape
             new_tensor, ctx = self._compression.compress_org(new_tensor, new_name, sigma_scale=1.0, ratio=density)
+            if ctx is not None:
+                selected_tensor = new_tensor[ctx]
+            else:
+                selected_tensor = new_tensor
+
+            torch.cuda.synchronize()
+            if self._profiling:
+                force_insert_item(self._compression_timers, new_name, time.time()-stime)
+
+            # Allreduce on the merged gradients 
+            stime = time.time()
+            if self._sparse:
+                result, included_indexes, full_mean = self._sparse_allreduce(new_name, new_tensor, selected_tensor, original_shape, topk_indexes=ctx)
+                if included_indexes is not None:
+                    if full_mean is not None:
+                        self._compression.add_residuals(included_indexes, new_name, full_mean)
+                    else:
+                        self._compression.add_residuals(included_indexes, new_name)
+
+        elif self._sparse and self._compression.name == 'topkA_stable' and self._allreduce_counter[new_name] > topka_stable_threshold:
+            density = self.get_current_density()
+            topka_stable_recompute_interval = 100
+            #self.topka_stable_indices = torch.empty(0)
+
+            original_shape = new_tensor.shape
+            if self._allreduce_counter[new_name] % topka_stable_recompute_interval == 0 or topka_stable_indices.numel() == 0:
+                new_tensor, ctx = self._compression.compress_org(new_tensor, new_name, sigma_scale=1.0, ratio=density)
+                self.topka_stable_indices = ctx
+            else:
+                new_tensor, ctx = self._compression.compress_stable(new_tensor, self.topka_stable_indices, new_name, sigma_scale=1.0, ratio=density)
+
+
             if ctx is not None:
                 selected_tensor = new_tensor[ctx]
             else:

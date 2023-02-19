@@ -62,6 +62,35 @@ class TopKCompressor():
             return tensor, indexes
 
     @staticmethod
+    def compress_stable(tensor, prev_indices, name=None, sigma_scale=2.5, ratio=0.05):
+        start = time.time()
+        with torch.no_grad():
+            if name not in TopKCompressor.residuals:
+                TopKCompressor.residuals[name] = torch.zeros_like(tensor.data)
+            # top-k solution
+            numel = tensor.numel()
+            k = max(int(numel * ratio), 1)
+
+            tensor.data.add_(TopKCompressor.residuals[name].data)
+
+            #values, indexes = torch.topk(torch.abs(tensor.data), k=k)
+            #values = tensor.data[indexes]
+            values = tensor.data[prev_indices]
+            if name not in TopKCompressor.zero_conditions:
+                TopKCompressor.zero_conditions[name] = torch.ones(numel, dtype=torch.float32, device=tensor.device) 
+            zero_condition = TopKCompressor.zero_conditions[name]
+            zero_condition.fill_(1.0)
+            zero_condition[prev_indices] = 0.0
+
+            TopKCompressor.residuals[name].data.fill_(0.)
+            TopKCompressor.residuals[name].data = tensor.data * zero_condition
+            tensor.data.sub_(TopKCompressor.residuals[name].data)
+
+            TopKCompressor.values[name] = values
+            TopKCompressor.indexes[name] = prev_indices
+            return tensor, prev_indices
+
+    @staticmethod
     def compress(tensor, name=None, sigma_scale=2.5, ratio=0.05):
         start = time.time()
         with torch.no_grad():
@@ -451,6 +480,9 @@ class GaussianCompressor():
 class TopKACompressor(TopKCompressor):
     name = 'topkA'
 
+class TopKAStableCompressor(TopKCompressor):
+    name = 'topkA_stable'
+
 class TopKACompressor2(TopKCompressor):
     name = 'topkA2'
 
@@ -478,6 +510,7 @@ class TopKAoptCompressor(GaussianCompressor):
 
 compressors = {
         'topkA': TopKACompressor,
+        'topkA_stable': TopKAStableCompressor,
         'topkAopt': TopKAoptCompressor,
         'topkA2': TopKACompressor2,
         'topkSA': TopKSACompressor,
