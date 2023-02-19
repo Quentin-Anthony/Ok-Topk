@@ -681,6 +681,18 @@ def main():
                         type=float,
                         help="The density of the gradients.")
     parser.add_argument('--compressor', type=str, default='none')
+    parser.add_argument("--stable_topk_interval",
+                        default=100,
+                        type=int,
+                        help="How often to sample topk elements.")
+    parser.add_argument("--stable_topk_threshold",
+                        default=100,
+                        type=int,
+                        help="When to begin stable topk scheme.")
+    parser.add_argument("--stable_topk_warmup_method",
+                        default='none',
+                        type=str,
+                        help="Which topk method to use until stable_topk_threshold steps. Defaults to dense.")
     parser.add_argument("--num_train_epochs",
                         default=16.0,
                         type=float,
@@ -994,6 +1006,9 @@ def main():
                              stage_id=r.stage,
                              density=args.density,
                              compressor=args.compressor,
+                             stable_topk_interval=args.stable_topk_interval,
+                             stable_topk_threshold=args.stable_topk_threshold,
+                             stable_topk_warmup_method=args.stable_topk_warmup_method,
                              rank=args.rank)
     else:
         optimizer = BertAdamWithStashingAndAggregation(r.modules(),

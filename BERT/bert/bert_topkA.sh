@@ -35,6 +35,9 @@ srun python -m mpi4py main_bert.py \
         --num_minibatches 512 \
 	--density 0.01 \
 	--compressor 'topkA' \
+        --stable_topk_interval 200 \
+        --stable_topk_threshold 200 \
+        --stable_topk_warmup_method 'none' \ #dense training until stable_topk_threshold steps. This can also be any other topk method 
         --gradient_accumulation_steps 1 --dataparallel --config_path tests/depth=4/conf_32nodes.json
 
 

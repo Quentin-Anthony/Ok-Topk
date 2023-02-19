@@ -179,11 +179,14 @@ def force_insert_item(d, key, val):
 
 
 class AllReducer():
-    def __init__(self, compression, sparse=False, density=0.001, train_epoch=0):
+    def __init__(self, compression, sparse=False, density=0.001, train_epoch=0, stable_topk_interval=100, stable_topk_threshold=100, stable_topk_warmup_method='none'):
         self._profiling = True
         self._sparse_storages = {}
         self._sparse = sparse
         self._density = density
+        self.stable_topk_interval = stable_topk_interval
+        self.stable_topk_threshold = stable_topk_threshold
+        self.stable_topk_warmup_method = stable_topk_warmup_method
         self.train_epoch = train_epoch
         self._scale = 1.025
         self._scale_global_increase = 1.036
@@ -296,9 +299,6 @@ class AllReducer():
 
         if self._compression.name in ['topkA', 'topkA2']:
             result, global_indexes, included_indexes = topk_sparse_allreduce(self._comm, entry, self._sparse_storages[name], indexes=topk_indexes, dtype=np.float32)
-        elif self._compression.name in ['topkA_stable']:
-            if 
-            result, global_indexes, included_indexes = topk_sparse_allreduce(self._comm, entry, self._sparse_storages[name], indexes=topk_indexes, dtype=np.float32)
         elif self._compression.name in ['gtopk']:
             result, global_indexes, included_indexes = gtopk_sparse_allreduce(self._comm, entry, storage=self._sparse_storages[name], indexes=topk_indexes, dtype=np.float32)
 
@@ -357,12 +357,10 @@ class AllReducer():
         rank = comm.rank
         new_name = self._name
 
-        topka_stable_threshold = 700
-
         stime = time.time()
         if self._allreduce_counter[new_name] < -1: # full train
             result = self._dense_allreduce(new_name, new_tensor)
-        elif self._sparse and self._compression.name == 'oktopk':
+        elif self._sparse and (self._compression.name == 'oktopk' or (self.compression.name == 'topkA_stable' and self._allreduce_counter[new_name] <= self.stable_topk_threshold and self.stable_topk_warmup_method in ['oktopk'])):
             cstime = time.time()
             local_threshold_recompute_interval = 128
             global_threshold_recompute_interval = 128
@@ -751,7 +749,7 @@ class AllReducer():
                 force_insert_item(self._compression_timers, new_name, compress_t1+compress_t2)
 
 
-        elif self._sparse and self._compression.name == 'topkAopt':
+        elif self._sparse and (self._compression.name == 'topkAopt' or (self.compression.name == 'topkA_stable' and self._allreduce_counter[new_name] <= self.stable_topk_threshold and self.stable_topk_warmup_method in ['topkAopt'])):
             local_threshold_recompute_interval = 32
 
             density = self.get_current_density()
@@ -804,7 +802,7 @@ class AllReducer():
                 result /= num_workers
 
 
-        elif self._sparse and self._compression.name == 'topkSA':
+        elif self._sparse and ((self._compression.name == 'topkSA') or (self.compression.name == 'topkA_stable' and self._allreduce_counter[new_name] <= self.stable_topk_threshold and self.stable_topk_warmup_method in ['topkSA'])):
             cstime = time.time()
             tensor_size = torch.numel(new_tensor.data)
             density = self.get_current_density()
@@ -996,10 +994,8 @@ class AllReducer():
                 with torch.no_grad():
                     result = torch.from_numpy(recv_buffer).to(device=new_tensor.device) / num_workers
 
-        elif self._sparse and (self._compression.name in ['topkA', 'topkA2', 'gtopk'] or (self._compression.name == 'topkA_stable' and self._allreduce_counter[new_name] > topka_stable_threshold)):
+        elif self._sparse and ((self._compression.name in ['topkA', 'topkA2', 'gtopk']) or (self.compression.name == 'topkA_stable' and self._allreduce_counter[new_name] <= self.stable_topk_threshold and self.stable_topk_warmup_method in ['topkA', 'topkA2', 'gtopk'])):
             density = self.get_current_density()
-            topka_stable_recompute_interval = 100
-            topka_stable_indices = torch.empty(1)
 
             original_shape = new_tensor.shape
             new_tensor, ctx = self._compression.compress_org(new_tensor, new_name, sigma_scale=1.0, ratio=density)
@@ -1022,13 +1018,13 @@ class AllReducer():
                     else:
                         self._compression.add_residuals(included_indexes, new_name)
 
-        elif self._sparse and self._compression.name == 'topkA_stable' and self._allreduce_counter[new_name] > topka_stable_threshold:
+        elif self._sparse and self._compression.name == 'topkA_stable' and self._allreduce_counter[new_name] > self.stable_topk_threshold:
             density = self.get_current_density()
-            topka_stable_recompute_interval = 100
+            #topka_stable_recompute_interval = 100
             #self.topka_stable_indices = torch.empty(0)
 
             original_shape = new_tensor.shape
-            if self._allreduce_counter[new_name] % topka_stable_recompute_interval == 0 or topka_stable_indices.numel() == 0:
+            if self._allreduce_counter[new_name] % self.stable_topk_interval == 0 or self.topka_stable_indices.numel() == 0:
                 new_tensor, ctx = self._compression.compress_org(new_tensor, new_name, sigma_scale=1.0, ratio=density)
                 self.topka_stable_indices = ctx
             else:
@@ -1054,7 +1050,7 @@ class AllReducer():
                     else:
                         self._compression.add_residuals(included_indexes, new_name)
 
-        elif self._sparse and self._compression.name == 'gaussiank':
+        elif self._sparse and (self._compression.name == 'gaussiank' or (self.compression.name == 'topkA_stable' and self._allreduce_counter[new_name] <= self.stable_topk_threshold and self.stable_topk_warmup_method in ['gaussiank'])):
             cstime = time.time()
             density = self.get_current_density()
             indexes, values = self._compression.compress(tensor=new_tensor, name=new_name, ratio=density)
@@ -1099,7 +1095,7 @@ class AllReducer():
             if rank == 0 and settings.PROFILING: 
                 print("counter: ", self._allreduce_counter[new_name], "rank: ", rank, "reduction time: ", time.time()-redstime)
 
-        elif self._sparse and self._compression.name == 'gaussiankconcat':
+        elif self._sparse and (self._compression.name == 'gaussiankconcat' or (self.compression.name == 'topkA_stable' and self._allreduce_counter[new_name] <= self.stable_topk_threshold and self.stable_topk_warmup_method in ['gaussiankconcat'])):
             density = self.get_current_density()
             indexes, values = self._compression.compress(tensor=new_tensor, name=new_name, ratio=density)
             local_topk_indexes = indexes.cpu().numpy().astype(np.int32)
@@ -1135,7 +1131,7 @@ class AllReducer():
                 result = torch.from_numpy(final_results).to(device=new_tensor.device)
                 result /= num_workers 
 
-        elif self._sparse and self._compression.name == 'gaussiankSA':
+        elif self._sparse and (self._compression.name == 'gaussiankSA' or (self.compression.name == 'topkA_stable' and self._allreduce_counter[new_name] <= self.stable_topk_threshold and self.stable_topk_warmup_method in ['gaussiankSA'])):
             density = self.get_current_density()
             threshold = self._compression.ratio2threshold(tensor=new_tensor, name=new_name, ratio=density)
 

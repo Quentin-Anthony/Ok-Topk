@@ -56,6 +56,7 @@ srun python -m mpi4py main_bert.py \
         --num_minibatches 512 \
 	--density 0.01 \
 	--compressor 'topkA_stable' \
+        --stable-topk-interval 500 \
         --gradient_accumulation_steps 1 --dataparallel --config_path tests/depth=4/conf_32nodes.json
 
 

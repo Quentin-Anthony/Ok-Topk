@@ -81,7 +81,7 @@ class BertAdam(Optimizer):
     """
     def __init__(self, params, lr=required, warmup=-1, t_total=-1, schedule='warmup_linear',
                  b1=0.9, b2=0.999, e=1e-6, weight_decay=0.01,
-                 max_grad_norm=1.0, flush_group=None, flush_group_size=None, stage_id=None, density=1.0, compressor='none', rank=-1):
+                 max_grad_norm=1.0, flush_group=None, flush_group_size=None, stage_id=None, density=1.0, compressor='none', stable_topk_interval=100, stable_topk_threshold=100, stable_topk_warmup_method='none', rank=-1):
         if lr is not required and lr < 0.0:
             raise ValueError("Invalid learning rate: {} - should be >= 0.0".format(lr))
         if schedule not in SCHEDULES:
@@ -113,7 +113,7 @@ class BertAdam(Optimizer):
             is_sparse = True
 
         self.compressor = compressors[compressor]
-        self.allreducer = ar.AllReducer(compression=self.compressor, sparse=is_sparse, density=density)
+        self.allreducer = ar.AllReducer(compression=self.compressor, sparse=is_sparse, density=density, stable_topk_interval=stable_topk_interval, stable_topk_threshold=stable_topk_threshold, stable_topk_warmup_method=stable_topk_warmup_method)
 
         super(BertAdam, self).__init__(params, defaults)
 
